@@ -101,105 +101,90 @@ def _log_score_weight_opt(
 
 
 def compute_country_weights(
-    skt_params: pd.DataFrame,
-    panel: pd.DataFrame,
-    horizon: int = 3,
-    pool_start: int = POOL_START,
-) -> pd.DataFrame:
+    params_by_h: dict,
+    hicp_actual: pd.DataFrame,
+    horizons: list = None,
+) -> np.ndarray:
     """
-    Compute country-specific log-score pooling weights.
+    Compute log-score pooling weights across forecast horizons for one country.
 
     Parameters
     ----------
-    skt_params : DataFrame with columns iso3, year, horizon, cond_var, xi, omega, alpha, nu
-    panel      : estimation panel (iso3, year, debt_gdp_fwdH)
-    horizon    : forecast horizon
+    params_by_h : dict {h → DataFrame with cols: year, cond_var, xi, omega, alpha, nu}
+                  for a single country
+    hicp_actual : DataFrame with 'year' and 'hicp' columns (one country)
+    horizons    : list of horizons to pool (default [1, 2, 4])
 
     Returns
     -------
-    DataFrame: iso3, cond_var, weight
+    np.ndarray of shape (len(horizons),) — optimal log-score mixture weights summing to 1
     """
-    dep_col    = f"debt_gdp_fwd{horizon}"
-    cond_vars  = skt_params["cond_var"].unique().tolist()
-    n_models   = len(cond_vars)
+    if horizons is None:
+        horizons = [1, 2, 4]
+    n_h = len(horizons)
 
-    rows = []
+    hicp_ser = hicp_actual.set_index("year")["hicp"]
 
-    for iso3, country_params in skt_params[skt_params["horizon"] == horizon].groupby("iso3"):
-        # Get realisations for this country in validation window
-        realised_df = panel[
-            (panel["iso3"] == iso3) &
-            (panel["year"] >= pool_start)
-        ][["year", dep_col]].dropna()
-
-        if len(realised_df) < 5:
-            # Insufficient data: equal weights
-            for cv in cond_vars:
-                rows.append({"iso3": iso3, "cond_var": cv, "weight": 1.0 / n_models})
+    # For each horizon h: average params across cond_vars per year, then
+    # evaluate the resulting PDF at the h-year-forward realised HICP.
+    h_pdfs: dict[int, dict[int, float]] = {}
+    for h in horizons:
+        df = params_by_h.get(h)
+        if df is None or df.empty:
+            h_pdfs[h] = {}
             continue
 
-        years_val = realised_df["year"].values
-        d_real    = realised_df[dep_col].values
+        by_year: dict[int, float] = {}
+        for t, grp in df.groupby("year"):
+            valid = grp.dropna(subset=["xi", "omega", "alpha", "nu"])
+            if valid.empty:
+                continue
+            xi    = float(valid["xi"].mean())
+            omega = float(valid["omega"].mean())
+            alpha = float(valid["alpha"].mean())
+            nu    = float(valid["nu"].mean())
 
-        # For each observation in validation, evaluate each model's PDF at realised value
-        per_model_pdfs = np.zeros((len(d_real), n_models))
+            realised = hicp_ser.get(int(t) + h)
+            if realised is None or np.isnan(realised):
+                continue
 
-        for k, cond_var in enumerate(cond_vars):
-            model_preds = country_params[
-                (country_params["cond_var"] == cond_var) &
-                (country_params["year"].isin(years_val))
-            ].set_index("year")
+            try:
+                pdf_val = max(_skt_pdf(float(realised), xi, omega, alpha, nu), 1e-12)
+            except Exception:
+                pdf_val = 1e-12
+            by_year[int(t)] = pdf_val
 
-            for j, yr in enumerate(years_val):
-                if yr in model_preds.index:
-                    r = model_preds.loc[yr]
-                    if not any(pd.isna([r["xi"], r["omega"], r["alpha"], r["nu"]])):
-                        try:
-                            per_model_pdfs[j, k] = max(
-                                _skt_pdf(d_real[j], r["xi"], r["omega"], r["alpha"], r["nu"]),
-                                1e-12,
-                            )
-                        except Exception:
-                            per_model_pdfs[j, k] = 1e-12
-                    else:
-                        per_model_pdfs[j, k] = 1e-12
-                else:
-                    per_model_pdfs[j, k] = 1e-12
+        h_pdfs[h] = by_year
 
-        # Check that at least some models have non-trivial PDFs
-        if per_model_pdfs.max() < 1e-10:
-            weights = np.ones(n_models) / n_models
-        else:
-            weights = _log_score_weight_opt(d_real, per_model_pdfs, n_models)
+    # Common evaluation years (all horizons must have a score)
+    common_years: set[int] | None = None
+    for h in horizons:
+        h_years = set(h_pdfs.get(h, {}).keys())
+        common_years = h_years if common_years is None else common_years & h_years
 
-        for k, cond_var in enumerate(cond_vars):
-            rows.append({"iso3": iso3, "cond_var": cond_var, "weight": float(weights[k])})
+    if not common_years or len(common_years) < 3:
+        return np.ones(n_h) / n_h
 
-    out = pd.DataFrame(rows)
+    t_sorted = sorted(common_years)
+    n_obs = len(t_sorted)
+    per_model_pdfs = np.zeros((n_obs, n_h))
+    for k, h in enumerate(horizons):
+        for j, t in enumerate(t_sorted):
+            per_model_pdfs[j, k] = h_pdfs[h][t]
 
-    out_path = RISK_DIR / "pooling_weights.parquet"
-    out.to_parquet(out_path, index=False)
-    print(f"Saved pooling weights → {out_path}")
-    return out
-
-
-def load_pooling_weights(horizon: int = 3) -> pd.DataFrame:
-    """Load cached pooling weights."""
-    cache = RISK_DIR / "pooling_weights.parquet"
-    if cache.exists():
-        return pd.read_parquet(cache)
-    from model.quantile_fit import load_skt_params
-    from data.panel_builder import load_panel
-    skt = load_skt_params()
-    panel = load_panel()
-    return compute_country_weights(skt, panel, horizon=horizon)
+    dummy = np.zeros(n_obs)  # _log_score_weight_opt only uses per_model_pdfs
+    return _log_score_weight_opt(dummy, per_model_pdfs, n_h)
 
 
 if __name__ == "__main__":
     from model.quantile_fit import load_skt_params
-    from data.panel_builder import load_panel
+    from data.panel_builder import build_panel
+    import pandas as _pd
 
     skt   = load_skt_params()
-    panel = load_panel()
-    w     = compute_country_weights(skt, panel, horizon=3)
-    print(w)
+    panel = build_panel()
+    iso3  = "DEU"
+    params_by_h = {h: skt[(skt["iso3"] == iso3) & (skt["horizon"] == h)] for h in [1, 2, 4]}
+    hicp_actual = panel[panel["iso3"] == iso3][["year", "hicp"]]
+    w = compute_country_weights(params_by_h, hicp_actual, horizons=[1, 2, 4])
+    print(f"{iso3}: h=[1,2,4] weights = {w}")

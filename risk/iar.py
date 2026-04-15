@@ -138,84 +138,128 @@ def _get_ecb_baseline(iso3: str, ameco_df: pd.DataFrame | None, year: int = 2027
 
 
 def compute_iar(
-    skt_params: pd.DataFrame,
-    weights: pd.DataFrame,
+    skt_params: dict | pd.DataFrame,
+    weights: dict | pd.DataFrame,
+    ameco_df: pd.DataFrame | None = None,
+    panel: pd.DataFrame | None = None,
+    countries: list | None = None,
     horizon: int = 2,
     base_year: int = 2024,
     recenter: bool = True,
-    ameco_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Compute pooled Inflation-at-Risk for G4 countries.
 
     Parameters
     ----------
-    skt_params : DataFrame with skewed-t parameters (iso3, year, horizon, cond_var,
-                 xi, omega, alpha, nu)
-    weights    : DataFrame with country-specific pooling weights (iso3, cond_var, weight)
-    horizon    : forecast horizon (default 2 → 2026 for assessment in 2024)
+    skt_params : dict {h → DataFrame with iso3, year, cond_var, xi, omega, alpha, nu}
+                 OR legacy single DataFrame with a 'horizon' column
+    weights    : dict {iso3 → np.ndarray of horizon weights [w_h1, w_h2, ...]}
+                 OR legacy DataFrame with iso3, cond_var, weight columns
+    ameco_df   : AMECO inflation expectations DataFrame (for 2027 re-centring anchor)
+    panel      : estimation panel (optional, unused but accepted for API compatibility)
+    countries  : list of iso3 codes to process (default: G4_COUNTRIES)
+    horizon    : primary forecast horizon used for per-driver waterfall decomposition
     base_year  : last data year for projection base
-    recenter   : re-center pooled median to ECB/AMECO 2027 baseline
-    ameco_df   : AMECO inflation expectations DataFrame (for 2027 re-centering anchor)
+    recenter   : re-centre pooled median to ECB/AMECO 2027 baseline
 
     Returns
     -------
     DataFrame: iso3, Q05, Q50, Q95, IaR, Upside, Downside, ecb_baseline,
-               + per-driver upside decomposition columns
+               + upside_{cond_var} waterfall decomposition columns
     """
     taus_to_extract = [0.05, 0.50, 0.95]
-    cond_vars = skt_params["cond_var"].unique().tolist()
+
+    if countries is None:
+        countries = G4_COUNTRIES
+
+    # Normalise skt_params to dict format {h: DataFrame}
+    if isinstance(skt_params, pd.DataFrame):
+        skt_dict: dict = {
+            int(h): skt_params[skt_params["horizon"] == h]
+            for h in skt_params["horizon"].unique()
+        }
+    else:
+        skt_dict = {int(h): df for h, df in skt_params.items()}
+
+    horizons = sorted(skt_dict.keys())
 
     results = []
 
-    for iso3 in G4_COUNTRIES:
-        country_skt = skt_params[
-            (skt_params["iso3"] == iso3) &
-            (skt_params["horizon"] == horizon)
-        ]
-        if country_skt.empty:
-            print(f"  Warning: No skt params for {iso3} h={horizon}")
+    for iso3 in countries:
+        # Latest year available across all horizons
+        latest_years = []
+        for h, df in skt_dict.items():
+            sub = df[df["iso3"] == iso3]
+            if not sub.empty:
+                latest_years.append(int(sub["year"].max()))
+        if not latest_years:
+            print(f"  Warning: No skt params for {iso3}")
             continue
+        latest_year = max(latest_years)
 
-        latest_year = country_skt["year"].max()
-        params_latest = country_skt[country_skt["year"] == latest_year]
+        # Horizon weights for this country
+        if isinstance(weights, dict):
+            w_arr = np.asarray(
+                weights.get(iso3, np.ones(len(horizons)) / len(horizons)),
+                dtype=float,
+            )
+        else:
+            # Legacy DataFrame — equal horizon weights
+            w_arr = np.ones(len(horizons)) / float(len(horizons))
 
-        # Retrieve pooling weights
-        country_weights_df = weights[weights["iso3"] == iso3]
-        w_dict = dict(zip(country_weights_df["cond_var"], country_weights_df["weight"]))
+        if len(w_arr) != len(horizons):
+            w_arr = np.ones(len(horizons)) / float(len(horizons))
+        w_arr = np.maximum(w_arr, 0.0)
+        w_arr /= w_arr.sum()
 
-        # Build component list
-        component_params  = []
-        component_weights = []
-        for cv in cond_vars:
-            row = params_latest[params_latest["cond_var"] == cv]
-            if row.empty:
+        # For each horizon: average params across cond_vars at the latest year
+        component_params: list[dict] = []
+        component_weights: list[float] = []
+
+        for h, w_h in zip(horizons, w_arr):
+            df_h = skt_dict[h]
+            params_h = df_h[
+                (df_h["iso3"] == iso3) & (df_h["year"] == latest_year)
+            ].dropna(subset=["xi", "omega", "alpha", "nu"])
+
+            if params_h.empty:
+                # Fall back to latest available year for this horizon
+                df_h_country = df_h[df_h["iso3"] == iso3].dropna(
+                    subset=["xi", "omega", "alpha", "nu"]
+                )
+                if df_h_country.empty:
+                    continue
+                params_h = df_h_country[
+                    df_h_country["year"] == df_h_country["year"].max()
+                ]
+
+            if params_h.empty:
                 continue
-            r = row.iloc[0]
-            if any(pd.isna([r["xi"], r["omega"], r["alpha"], r["nu"]])):
-                continue
-            component_params.append({
-                "xi": float(r["xi"]), "omega": float(r["omega"]),
-                "alpha": float(r["alpha"]), "nu": float(r["nu"]),
-            })
-            component_weights.append(w_dict.get(cv, 1.0 / len(cond_vars)))
+
+            xi    = float(params_h["xi"].mean())
+            omega = float(params_h["omega"].mean())
+            alpha = float(params_h["alpha"].mean())
+            nu    = float(params_h["nu"].mean())
+
+            component_params.append({"xi": xi, "omega": omega, "alpha": alpha, "nu": nu})
+            component_weights.append(float(w_h))
 
         if not component_params:
             print(f"  Warning: No valid SKT components for {iso3}")
             continue
 
-        # Normalise weights
         wt = np.array(component_weights)
         wt /= wt.sum()
 
-        # Extract pooled quantiles
-        q_values = {}
+        # Extract pooled quantiles (pooled across horizons)
+        q_values: dict[float, float] = {}
         for tau in taus_to_extract:
             q_values[tau] = _pooled_quantile(tau, component_params, wt.tolist())
 
         q05, q50, q95 = q_values[0.05], q_values[0.50], q_values[0.95]
 
-        # Re-center to ECB/AMECO 2027 baseline
+        # Re-centre to ECB/AMECO 2027 baseline
         ecb_med = _get_ecb_baseline(iso3, ameco_df, year=2027)
         shift   = (ecb_med - q50) if recenter and np.isfinite(q50) else 0.0
         q05 += shift
@@ -239,31 +283,28 @@ def compute_iar(
             "Downside":     round(downside, 2),
             "ecb_baseline": ecb_med,
         }
-
-        # Per-driver weights
-        for k, cv in enumerate(cond_vars):
-            row_out[f"w_{cv}"] = float(wt[k]) if k < len(wt) else 0.0
-
         results.append(row_out)
 
     out = pd.DataFrame(results)
 
-    # ── Driver upside decomposition (waterfall) ────────────────────────────
-    cond_var_keys = [f.replace("w_", "") for f in out.columns if f.startswith("w_")]
-    for cv in cond_var_keys:
+    # ── Per-driver upside decomposition (waterfall) ──────────────────────────
+    # Use the primary horizon's cond_var predictions (equal-weight across cond_vars)
+    primary_df = skt_dict.get(horizon, next(iter(skt_dict.values())))
+    cond_vars  = primary_df["cond_var"].unique().tolist() if "cond_var" in primary_df.columns else []
+
+    for cv in cond_vars:
         out[f"upside_{cv}"] = np.nan
 
     for idx, row in out.iterrows():
         iso3         = row["iso3"]
         total_upside = row["Upside"]
-        country_skt  = skt_params[
-            (skt_params["iso3"] == iso3) &
-            (skt_params["horizon"] == horizon) &
-            (skt_params["year"] == row["year"])
+        country_h    = primary_df[
+            (primary_df["iso3"] == iso3) &
+            (primary_df["year"] == row["year"])
         ]
-        driver_upsides = {}
-        for cv in cond_var_keys:
-            cv_row = country_skt[country_skt["cond_var"] == cv]
+        driver_upsides: dict[str, float] = {}
+        for cv in cond_vars:
+            cv_row = country_h[country_h["cond_var"] == cv]
             if cv_row.empty:
                 continue
             r = cv_row.iloc[0]
@@ -295,19 +336,26 @@ def load_iar(horizon: int = 2) -> pd.DataFrame:
     if cache.exists():
         return pd.read_parquet(cache)
     from model.quantile_fit import load_skt_params
-    from risk.pooling import load_pooling_weights
-    skt     = load_skt_params()
-    weights = load_pooling_weights(horizon=horizon)
-    return compute_iar(skt, weights, horizon=horizon)
+    from data.panel_builder import build_panel
+    from data.ameco import load_ameco
+    skt   = load_skt_params()
+    panel = build_panel()
+    ameco = load_ameco()
+    skt_dict = {h: skt[skt["horizon"] == h] for h in skt["horizon"].unique()}
+    countries = G4_COUNTRIES
+    equal_weights = {iso3: np.ones(3) / 3.0 for iso3 in countries}
+    return compute_iar(skt_dict, equal_weights, ameco_df=ameco, horizon=horizon)
 
 
 if __name__ == "__main__":
     from model.quantile_fit import load_skt_params
-    from risk.pooling import load_pooling_weights
+    from data.panel_builder import build_panel
     from data.ameco import load_ameco
 
-    skt     = load_skt_params()
-    weights = load_pooling_weights(horizon=2)
-    ameco   = load_ameco()
-    iar     = compute_iar(skt, weights, horizon=2, ameco_df=ameco)
+    skt   = load_skt_params()
+    panel = build_panel()
+    ameco = load_ameco()
+    skt_dict = {h: skt[skt["horizon"] == h] for h in skt["horizon"].unique()}
+    equal_weights = {iso3: np.ones(3) / 3.0 for iso3 in G4_COUNTRIES}
+    iar = compute_iar(skt_dict, equal_weights, ameco_df=ameco, horizon=2)
     print(iar.T)
