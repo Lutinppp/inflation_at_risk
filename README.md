@@ -144,6 +144,39 @@ All data fetches have compiled fallback tables — the pipeline will execute cor
 
 ---
 
+## Econometric validation suite
+
+The repository now includes a reusable validation module for the full IaR pipeline:
+
+```python
+from validation import run_validation_suite
+
+validation = run_validation_suite(
+    panel=panel,
+    results=results,
+    skt_params=skt_params,
+    weights=weights,
+    iar=iar,
+    pooled_scores=pooled_scores,
+    daresults=daresults,
+)
+```
+
+The returned object is a nested dictionary keyed by `category1` through `category6`,
+with publication-ready tables for:
+
+- panel structure
+- MSS diagnostics
+- skewed-t fit quality
+- density pooling validation
+- out-of-sample forecasting performance
+- de-anchoring logit diagnostics
+
+The validation functions accept either the notebook-style in-memory objects or the
+repo's cached flat parquet outputs.
+
+---
+
 ## References
 
 - López-Salido, D. & Loria, F. (2024). *Inflation at Risk*. **Journal of Monetary Economics**, 105569.
@@ -153,4 +186,3 @@ All data fetches have compiled fallback tables — the pipeline will execute cor
 - Crump, R., Eusepi, S., Giannoni, M. & Sahin, A. (2022). *The Unemployment–Inflation Trade-off Revisited*. NBER Working Paper 29186.
 - Machado, J.A.F. & Santos Silva, J.M.C. (2019). *Quantiles via Moments*. **Journal of Econometrics**, 213(1), 145–173.
 - Fernández, C. & Steel, M.F.J. (1998). *On Bayesian Modeling of Fat Tails and Skewness*. **JASA**, 93(441), 359–371.
-

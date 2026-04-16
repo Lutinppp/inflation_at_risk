@@ -123,7 +123,12 @@ def compute_country_weights(
         horizons = [1, 2, 4]
     n_h = len(horizons)
 
-    hicp_ser = hicp_actual.set_index("year")["hicp"]
+    # hicp_actual may be monthly; collapse to annual for horizon-based scoring.
+    hicp_ser = (
+        hicp_actual.groupby("year", as_index=False)["hicp"]
+        .mean()
+        .set_index("year")["hicp"]
+    )
 
     # For each horizon h: average params across cond_vars per year, then
     # evaluate the resulting PDF at the h-year-forward realised HICP.

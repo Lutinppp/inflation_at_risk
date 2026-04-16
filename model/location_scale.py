@@ -84,6 +84,15 @@ def _prepare_panel(
         required = ["hicp_lag", cond_col, dep_var]
 
     sub = df[["iso3", "year"] + required].dropna(subset=required).copy()
+
+    # The upstream panel may be monthly. MSS estimation here is annual,
+    # so collapse to one observation per (iso3, year).
+    if sub.duplicated(subset=["iso3", "year"]).any():
+        sub = (
+            sub.groupby(["iso3", "year"], as_index=False)[required]
+            .mean()
+        )
+
     sub = sub.set_index(["iso3", "year"])
     return sub
 
@@ -154,6 +163,12 @@ def run_location_scale(
         print(f"    Step 1 failed ({cond_var_name}, h={horizon}): {exc}")
         return pd.DataFrame()
 
+    # Defensive guard: some backends can emit duplicate MultiIndex labels.
+    if hasattr(resid1, "index") and not resid1.index.is_unique:
+        resid1 = resid1.groupby(level=[0, 1]).mean()
+    if hasattr(fitted1, "index") and not fitted1.index.is_unique:
+        fitted1 = fitted1.groupby(level=[0, 1]).mean()
+
     # ── Step 2: OLS on absolute residuals ────────────────────────────────
     sub2 = sub.copy()
     sub2["__abs_resid__"] = np.abs(resid1.reindex(sub2.index).values)
@@ -164,6 +179,9 @@ def run_location_scale(
     except Exception as exc:
         print(f"    Step 2 failed ({cond_var_name}, h={horizon}): {exc}")
         return pd.DataFrame()
+
+    if hasattr(fitted2, "index") and not fitted2.index.is_unique:
+        fitted2 = fitted2.groupby(level=[0, 1]).mean()
 
     # ── Step 3: standardise residuals, get empirical quantiles ───────────
     scale_hat = fitted2.reindex(sub2.index).clip(lower=1e-6)
