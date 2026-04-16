@@ -195,37 +195,55 @@ def run_deanchoring(
             })
 
             # ── Predict scores for forecast years ─────────────────────────
-            for iso3 in countries:
-                # Get upside for this country: prefer from iar, fall back to skt_flat
-                upside_val = None
-                if iar is not None and not iar.empty:
-                    row_iar = iar[iar["iso3"] == iso3]
-                    if not row_iar.empty and pd.notna(row_iar.iloc[0].get("Upside")):
-                        upside_val = float(row_iar.iloc[0]["Upside"])
+            # For each forecast_year, select the horizon that best matches the
+            # time distance from the latest available conditioning data:
+            #   h = forecast_year − max_cond_year  (clamped to [1, 4])
+            # This means 2026 uses h=1 upside (1-yr ahead from 2025 data) and
+            # 2027 uses h=2 upside (2-yr ahead from 2025 data), capturing
+            # genuinely different tail-risk widths.
+            cv_skt = skt_flat[skt_flat["cond_var"] == cv]
+            global_max_year = int(cv_skt["year"].max()) if len(cv_skt) > 0 else 2025
 
-                if upside_val is None:
-                    g4_sub = skt_flat[
+            available_horizons = sorted(skt_flat["horizon"].unique())
+
+            for iso3 in countries:
+                for fy in forecast_years:
+                    # Horizon matched to forecast distance from latest data
+                    h_match = max(1, min(int(fy - global_max_year), max(available_horizons)))
+                    if h_match not in available_horizons:
+                        h_match = available_horizons[-1]
+
+                    cv_h_sub = skt_flat[
                         (skt_flat["iso3"] == iso3) &
-                        (skt_flat["horizon"] == horizon) &
+                        (skt_flat["horizon"] == h_match) &
                         (skt_flat["cond_var"] == cv)
                     ]
-                    if g4_sub.empty:
+                    if cv_h_sub.empty:
                         continue
-                    latest = g4_sub.sort_values("year").iloc[-1]
-                    if any(pd.isna([latest["xi"], latest["omega"],
-                                    latest["alpha"], latest["nu"]])):
-                        continue
-                    try:
-                        from model.quantile_fit import skt_quantile_from_params
-                        q95 = skt_quantile_from_params(0.95, latest)
-                        q50 = skt_quantile_from_params(0.50, latest)
-                        upside_val = max(q95 - q50, 0.0)
-                    except Exception:
+                    latest = cv_h_sub.sort_values("year").iloc[-1]
+
+                    upside_val = None
+                    if not any(pd.isna([latest["xi"], latest["omega"],
+                                        latest["alpha"], latest["nu"]])):
+                        try:
+                            from model.quantile_fit import skt_quantile_from_params
+                            q95 = skt_quantile_from_params(0.95, latest)
+                            q50 = skt_quantile_from_params(0.50, latest)
+                            upside_val = max(q95 - q50, 0.0)
+                        except Exception:
+                            pass
+
+                    # Fallback: use iar.Upside
+                    if upside_val is None and iar is not None and not iar.empty:
+                        row_iar = iar[iar["iso3"] == iso3]
+                        if not row_iar.empty and pd.notna(row_iar.iloc[0].get("Upside")):
+                            upside_val = float(row_iar.iloc[0]["Upside"])
+
+                    if upside_val is None:
                         continue
 
-                X_pred = np.array([[1.0, upside_val]])
-                prob   = float(result.predict(X_pred)[0])
-                for fy in forecast_years:
+                    X_pred = np.array([[1.0, upside_val]])
+                    prob   = float(result.predict(X_pred)[0])
                     score_records.append({
                         "iso3":     iso3,
                         "year":     fy,

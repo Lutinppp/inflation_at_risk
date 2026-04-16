@@ -17,6 +17,7 @@ Columns:
   iso3, year, month, hicp, hicp_lag,
   output_gap, infl_expectations, energy_price_chg,
   import_price_chg, clifs, spread_10y, wui,
+  food_price_chg, labour_cost_chg, neer_chg, reer_chg,
   hicp_fwd1, hicp_fwd2, hicp_fwd4
 """
 
@@ -133,6 +134,9 @@ def build_panel(
     from data.modules.imf_fsi import load_fsi
     from data.modules.ecb_spreads import load_spreads
     from data.modules.wui import load_wui
+    from data.modules.food_prices import load_food_prices
+    from data.modules.labour_costs import load_labour_costs
+    from data.modules.EER import load_neer, load_reer
 
     print("Building IaR monthly estimation panel ...")
 
@@ -151,6 +155,27 @@ def build_panel(
         else _make_wui_stub()
     )
 
+    # New series
+    food_raw = load_food_prices()[["iso3", "year", "month", "food_price_idx"]]
+    lc_all = load_labour_costs()
+    lc_raw = (
+        lc_all[
+            (lc_all["nace_r2"] == "B-S") & (lc_all["lcstruct"] == "D1_D4_MD5")
+        ][["iso3", "year", "quarter", "labour_cost_idx"]]
+        .copy()
+    )
+    neer_raw = load_neer()[["iso3", "year", "month", "neer"]]
+    reer_raw = load_reer()[["iso3", "year", "month", "reer_hicp"]]
+
+    # Compute YoY % changes for index-level series before monthlyizing
+    for df_, col_ in [(food_raw, "food_price_idx"), (lc_raw, "labour_cost_idx")]:
+        df_.sort_values(["iso3", "year", "quarter" if "quarter" in df_.columns else "month"], inplace=True)
+    food_raw["food_price_chg"] = food_raw.groupby("iso3")["food_price_idx"].pct_change(12) * 100
+    # Labour cost: quarterly → YoY = 4-period % change
+    lc_raw["labour_cost_chg"] = lc_raw.groupby("iso3")["labour_cost_idx"].pct_change(4) * 100
+    neer_raw["neer_chg"] = neer_raw.groupby("iso3")["neer"].pct_change(12) * 100
+    reer_raw["reer_chg"] = reer_raw.groupby("iso3")["reer_hicp"].pct_change(12) * 100
+
     # Convert everything to monthly with period-end anchoring + fill
     hicp = _monthlyize(hicp_raw, "hicp")
     ameco = _monthlyize(ameco_raw, "infl_expectations")
@@ -160,6 +185,10 @@ def build_panel(
     fsi = _monthlyize(fsi_raw, "clifs")
     spreads = _monthlyize(spreads_raw, "spread_10y")
     wui = _monthlyize(wui_raw, "wui")
+    food = _monthlyize(food_raw[["iso3", "year", "month", "food_price_chg"]], "food_price_chg")
+    lc = _monthlyize(lc_raw[["iso3", "year", "quarter", "labour_cost_chg"]], "labour_cost_chg")
+    neer = _monthlyize(neer_raw[["iso3", "year", "month", "neer_chg"]], "neer_chg")
+    reer = _monthlyize(reer_raw[["iso3", "year", "month", "reer_chg"]], "reer_chg")
 
     # Base grid from HICP coverage
     panel = hicp.copy()
@@ -174,6 +203,10 @@ def build_panel(
         .merge(fsi, on=["iso3", "year", "month"], how="left")
         .merge(spreads, on=["iso3", "year", "month"], how="left")
         .merge(wui, on=["iso3", "year", "month"], how="left")
+        .merge(food, on=["iso3", "year", "month"], how="left")
+        .merge(lc, on=["iso3", "year", "month"], how="left")
+        .merge(neer, on=["iso3", "year", "month"], how="left")
+        .merge(reer, on=["iso3", "year", "month"], how="left")
     )
 
     panel = panel[
@@ -204,6 +237,10 @@ def build_panel(
     panel["import_price_chg"] = panel["import_price_chg"].clip(lower=-40.0, upper=60.0)
     panel["spread_10y"] = panel["spread_10y"].clip(lower=-5.0, upper=25.0)
     panel["wui"] = panel["wui"].clip(lower=0.0, upper=2.0)
+    panel["food_price_chg"] = panel["food_price_chg"].clip(lower=-30.0, upper=60.0)
+    panel["labour_cost_chg"] = panel["labour_cost_chg"].clip(lower=-20.0, upper=30.0)
+    panel["neer_chg"] = panel["neer_chg"].clip(lower=-30.0, upper=30.0)
+    panel["reer_chg"] = panel["reer_chg"].clip(lower=-30.0, upper=30.0)
 
     panel = panel.sort_values(["iso3", "year", "month"]).reset_index(drop=True)
 

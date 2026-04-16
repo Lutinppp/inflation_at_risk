@@ -48,6 +48,10 @@ COND_VARS = {
     "clifs":              "clifs",
     "spread_10y":         "spread_10y",
     "wui":                "wui",
+    "food_price_chg":     "food_price_chg",
+    "labour_cost_chg":    "labour_cost_chg",
+    "neer_chg":           "neer_chg",
+    "reer_chg":           "reer_chg",
 }
 
 # Expected coefficient signs for QA checks
@@ -61,6 +65,10 @@ EXPECTED_SIGNS = {
     "clifs":             ("-", "-"),   # stress → demand compression, left tail
     "spread_10y":        (None, None), # ambiguous for inflation
     "wui":               (None, "+"),  # uncertainty → fatter tails
+    "food_price_chg":    ("+", "+"),   # food shocks → right tail
+    "labour_cost_chg":   ("+", None),  # cost-push → higher inflation
+    "neer_chg":          ("-", None),  # appreciation → cheaper imports
+    "reer_chg":          ("-", None),  # real appreciation → dis-inflationary
 }
 
 
