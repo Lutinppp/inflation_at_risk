@@ -51,7 +51,6 @@ COND_VARS = {
     "food_price_chg":     "food_price_chg",
     "labour_cost_chg":    "labour_cost_chg",
     "neer_chg":           "neer_chg",
-    "reer_chg":           "reer_chg",
 }
 
 # Expected coefficient signs for QA checks
@@ -68,7 +67,6 @@ EXPECTED_SIGNS = {
     "food_price_chg":    ("+", "+"),   # food shocks → right tail
     "labour_cost_chg":   ("+", None),  # cost-push → higher inflation
     "neer_chg":          ("-", None),  # appreciation → cheaper imports
-    "reer_chg":          ("-", None),  # real appreciation → dis-inflationary
 }
 
 
@@ -198,6 +196,10 @@ def run_location_scale(
     z = resid1.reindex(common_idx) / scale_hat.reindex(common_idx)
     z = z.dropna()
 
+    assert len(common_idx) == len(sub2), (
+        f"Index mismatch in {cond_var_name} h={horizon}: "
+        f"expected {len(sub2)}, got {len(common_idx)}"
+)
     if len(z) < 10:
         print(f"    Step 3 failed ({cond_var_name}, h={horizon}): too few z values")
         return pd.DataFrame()

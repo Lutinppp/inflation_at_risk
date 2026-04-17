@@ -17,7 +17,7 @@ Columns:
   iso3, year, month, hicp, hicp_lag,
   output_gap, infl_expectations, energy_price_chg,
   import_price_chg, clifs, spread_10y, wui,
-  food_price_chg, labour_cost_chg, neer_chg, reer_chg,
+  food_price_chg, labour_cost_chg, neer_chg,
   hicp_fwd1, hicp_fwd2, hicp_fwd4
 """
 
@@ -136,7 +136,7 @@ def build_panel(
     from data.modules.wui import load_wui
     from data.modules.food_prices import load_food_prices
     from data.modules.labour_costs import load_labour_costs
-    from data.modules.EER import load_neer, load_reer
+    from data.modules.EER import load_neer
 
     print("Building IaR monthly estimation panel ...")
 
@@ -165,7 +165,6 @@ def build_panel(
         .copy()
     )
     neer_raw = load_neer()[["iso3", "year", "month", "neer"]]
-    reer_raw = load_reer()[["iso3", "year", "month", "reer_hicp"]]
 
     # Compute YoY % changes for index-level series before monthlyizing
     for df_, col_ in [(food_raw, "food_price_idx"), (lc_raw, "labour_cost_idx")]:
@@ -174,7 +173,6 @@ def build_panel(
     # Labour cost: quarterly → YoY = 4-period % change
     lc_raw["labour_cost_chg"] = lc_raw.groupby("iso3")["labour_cost_idx"].pct_change(4) * 100
     neer_raw["neer_chg"] = neer_raw.groupby("iso3")["neer"].pct_change(12) * 100
-    reer_raw["reer_chg"] = reer_raw.groupby("iso3")["reer_hicp"].pct_change(12) * 100
 
     # Convert everything to monthly with period-end anchoring + fill
     hicp = _monthlyize(hicp_raw, "hicp")
@@ -188,7 +186,6 @@ def build_panel(
     food = _monthlyize(food_raw[["iso3", "year", "month", "food_price_chg"]], "food_price_chg")
     lc = _monthlyize(lc_raw[["iso3", "year", "quarter", "labour_cost_chg"]], "labour_cost_chg")
     neer = _monthlyize(neer_raw[["iso3", "year", "month", "neer_chg"]], "neer_chg")
-    reer = _monthlyize(reer_raw[["iso3", "year", "month", "reer_chg"]], "reer_chg")
 
     # Base grid from HICP coverage
     panel = hicp.copy()
@@ -206,7 +203,6 @@ def build_panel(
         .merge(food, on=["iso3", "year", "month"], how="left")
         .merge(lc, on=["iso3", "year", "month"], how="left")
         .merge(neer, on=["iso3", "year", "month"], how="left")
-        .merge(reer, on=["iso3", "year", "month"], how="left")
     )
 
     panel = panel[
@@ -240,7 +236,6 @@ def build_panel(
     panel["food_price_chg"] = panel["food_price_chg"].clip(lower=-30.0, upper=60.0)
     panel["labour_cost_chg"] = panel["labour_cost_chg"].clip(lower=-20.0, upper=30.0)
     panel["neer_chg"] = panel["neer_chg"].clip(lower=-30.0, upper=30.0)
-    panel["reer_chg"] = panel["reer_chg"].clip(lower=-30.0, upper=30.0)
 
     panel = panel.sort_values(["iso3", "year", "month"]).reset_index(drop=True)
 
