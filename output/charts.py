@@ -101,9 +101,12 @@ def fan_charts(
         # Historical
         hist = panel[
             (panel["iso3"] == iso3) & (panel["year"] >= hist_start)
-        ].sort_values("year")
+        ].sort_values(["year", "month"])
 
-        ax.plot(hist["year"], hist["hicp"],
+        # Aggregate to annual (take last month of each year)
+        hist_annual = hist.groupby("year")["hicp"].last().reset_index()
+
+        ax.plot(hist_annual["year"], hist_annual["hicp"],
                 color=NAVY, lw=2.0, label="Historical HICP", zorder=5)
 
         # IaR projection
@@ -115,9 +118,9 @@ def fan_charts(
         dr = iar_row.iloc[0]
 
         # Anchor year: last historical observation
-        anchor_year = int(hist["year"].max()) if not hist.empty else 2024
-        anchor_hicp = float(hist[hist["year"] == anchor_year]["hicp"].values[0]) \
-                      if not hist.empty else dr["Q50"]
+        anchor_year = int(hist_annual["year"].max()) if not hist_annual.empty else 2024
+        anchor_hicp = float(hist_annual[hist_annual["year"] == anchor_year]["hicp"].values[0]) \
+                      if not hist_annual.empty else dr["Q50"]
 
         proj_years = list(range(anchor_year, proj_end + 1))
 
@@ -340,7 +343,7 @@ def waterfall_charts(iar: pd.DataFrame) -> Path:
 
 def deanchoring_chart(pooled_scores: pd.DataFrame, base_rate: float = 0.20) -> Path:
     """
-    Horizontal bar chart of G4 de-anchoring probability scores for 2025 and 2026.
+    Horizontal bar chart of G4 de-anchoring probability scores for 2026 and 2027.
     Sorted by probability. Red dashed line at historical base rate.
     """
     if pooled_scores.empty:
@@ -358,9 +361,9 @@ def deanchoring_chart(pooled_scores: pd.DataFrame, base_rate: float = 0.20) -> P
         fontsize=13, fontweight="bold", color=NAVY,
     )
 
-    year_colors = {2025: RED, 2026: NAVY}
+    year_colors = {2026: RED, 2027: NAVY}
 
-    for ax, year in zip(axes, [2025, 2026]):
+    for ax, year in zip(axes, [2026, 2027]):
         sub = pooled_scores[pooled_scores["year"] == year].copy()
         if sub.empty:
             ax.set_title(f"{year}")

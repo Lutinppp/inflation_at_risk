@@ -738,7 +738,7 @@ def build_density_scores(panel: pd.DataFrame, skt_params: Any, weights: Any) -> 
     wide = wide.reset_index()
 
     actual = panel_annual[["iso3", "year"] + [c for c in panel_annual.columns if c.startswith("hicp_fwd")]].copy()
-    score = actual.merge(wide, on=["iso3", "year"], how="inner").merge(w, on="iso3", how="left")
+    score = actual.merge(wide, on=["iso3", "year"], how="inner").merge(w, on="iso3", how="inner")
     if score.empty:
         return score
 
