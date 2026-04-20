@@ -1,6 +1,6 @@
 # EU G4 Inflation-at-Risk (IaR)
 
-A Python implementation of the **Inflation-at-Risk** framework for the four largest EU economies (France, Germany, Italy, Spain), applying the same **Machado–Santos Silva (2019) location-scale quantile regression** methodology as the companion EU G4 Debt-at-Risk (`debt_at_risk`) project.
+A Python implementation of the **Inflation-at-Risk** framework for the four largest EU economies (France, Germany, Italy, Spain), applying the **Machado–Santos Silva (2019) location-scale quantile regression** methodology.
 
 ---
 
@@ -12,7 +12,7 @@ A single Jupyter notebook:
 notebooks/eu_g4_iar.ipynb
 ```
 
-When executed, it runs the full five-phase pipeline and produces four inline charts plus a summary results table.
+When executed, it runs the full pipeline and produces inline charts plus a summary results table.
 
 ---
 
@@ -20,11 +20,11 @@ When executed, it runs the full five-phase pipeline and produces four inline cha
 
 | Phase | Step | Detail |
 |-------|------|--------|
-| 1 | **Data** | 8 conditioning series for 29 EU/EEA countries; 1999–2025 |
+| 1 | **Data** | 11 conditioning series for 29 EU/EEA countries; 1999–2025 |
 | 2 | **MSS regression** | Three-step location-scale quantile estimator; τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}; h ∈ {1, 2, 4} years |
 | 3 | **Distribution fit** | Fernández-Steel skewed-t fitted analytically to five quantile predictions per country-year |
-| 4 | **Pooling** | Log-score density pooling across horizons (Crump *et al.* 2022) |
-| 5 | **IaR extraction** | P95 from pooled distribution; median re-centred to ECB/AMECO 2027 country baseline |
+| 4 | **Pooling** | Log-score density pooling across conditioning variables (Crump *et al.* 2022) |
+| 5 | **IaR extraction** | P95 from pooled distribution; median re-centred to ECB March 2026 staff projection for 2027 |
 | 6 | **De-anchoring** | Panel logit for P(HICP > 3% × 2 consecutive years); G4 scores for 2025/2026 |
 
 **Dependent variable**: Rolling-mean forward annual HICP:
@@ -45,14 +45,21 @@ $$\text{Upside} = Q_{0.95} - Q_{0.50}, \qquad \text{Downside} = Q_{0.50} - Q_{0.
 
 | Variable | Source | Endpoint / Series |
 |----------|--------|-------------------|
-| HICP inflation | Eurostat REST API | `prc_hicp_aind`, CP00, RCH_A |
-| Inflation expectations | EC AMECO | ZCPIH variable; G4 only |
-| Output gap | IMF DataMapper | NGAP_NPGDP |
-| Energy (Brent) | IMF DataMapper | POILBRE_USD % change |
-| Import prices | IMF DataMapper | PMPI / TM % change |
-| Financial stress | ECB CLIFS | Annual average of CLIFS index |
-| Sovereign spread | Eurostat | 10Y Maastricht bond yields (irt_lt_mcby_a) |
-| Uncertainty | WUI Project | World Uncertainty Index (Excel download) |
+| HICP inflation | Eurostat SDMX 3.0 API | `prc_hicp_minr`, TOTAL, RCH_A (monthly y/y %) |
+| Inflation expectations | OECD Economic Outlook (primary) | SDMX-JSON, `EO`, `CPIH_YTYPCT`, annual; 27 countries |
+| | ECB Consumer Expectations Survey (G4 2020+) | `ECB_CES1`, `INFL_NEXT12M.MEAN`, monthly averaged |
+| | Compiled fallback | CYP and MLT only (Eurostat actuals + EC forecasts) |
+| Output gap | OECD Economic Outlook | SDMX-JSON, `EO`, `GAP`, annual |
+| Energy (Brent) | FRED / St. Louis Fed | `DCOILBRENTEU` (daily ICE Brent, USD/bbl → annual % change) |
+| Import prices | ECB Statistical Data Warehouse (primary) | `MNA` dataflow, import deflator (SDMX 2.1) |
+| | OECD Economic Outlook (fallback) | `EO`, import price measure |
+| | EC AMECO (compiled fallback) | `PMIM` variable |
+| Food prices | Eurostat SDMX 3.0 API | `prc_fsc_idx` (monthly food price index) |
+| Labour costs | Eurostat SDMX 3.0 API | `lc_lci_r2_q` (quarterly labour cost index) |
+| Effective exchange rate | EC DG ECFIN | `m42neer.xlsx` (NEER) / `m42reer.xlsx` (REER) |
+| Financial stress | ECB CLIFS | `CLIFS` dataflow, annual average |
+| Sovereign spread | Eurostat SDMX 2.1 API | `IRT_LT_MCBY_M` (monthly 10Y Maastricht bond yields) |
+| Uncertainty | WUI Project | World Uncertainty Index (Ahir, Bloom, Furceri 2023), Excel download |
 
 All series include compiled fallback tables so the pipeline runs fully offline.
 
@@ -62,14 +69,17 @@ All series include compiled fallback tables so the pipeline runs fully offline.
 
 ```python
 COND_VARS = {
-    "hicp_lag":          "Lagged HICP (AR persistence)",
-    "output_gap":        "% of potential GDP (IMF)",
-    "infl_expectations": "AMECO ZCPIH forecast",
-    "energy_price_chg":  "Brent crude % change",
-    "import_price_chg":  "Import deflator % change",
-    "fsi":               "ECB CLIFS financial stress index",
-    "spread_10y":        "10Y Maastricht yield",
-    "wui":               "World Uncertainty Index",
+    "hicp_lag":           "Lagged HICP (AR persistence)",
+    "output_gap":         "% of potential GDP (OECD EO)",
+    "infl_expectations":  "1-year-ahead HICP forecast (OECD EO / ECB CES)",
+    "energy_price_chg":   "Brent crude % change (FRED DCOILBRENTEU)",
+    "import_price_chg":   "Import deflator % change (ECB SDW MNA / OECD EO)",
+    "food_price_chg":     "Food price index % change (Eurostat prc_fsc_idx)",
+    "labour_cost_chg":    "Labour cost index % change (Eurostat lc_lci_r2_q)",
+    "neer_chg":           "Nominal effective exchange rate % change (EC ECFIN)",
+    "clifs":              "ECB CLIFS financial stress index",
+    "spread_10y":         "10Y Maastricht yield (Eurostat IRT_LT_MCBY_M)",
+    "wui":                "World Uncertainty Index (Ahir, Bloom, Furceri 2023)",
 }
 ```
 
@@ -77,7 +87,7 @@ COND_VARS = {
 
 ## Re-centring Anchor
 
-The median of the pooled predictive distribution is shifted to the country-specific ECB/AMECO **2027 HICP forecast** (ZCPIH variable), analogous to how the DaR project re-centres to the IMF WEO 2027 debt/GDP path.
+The median of the pooled predictive distribution is shifted to the country-specific **ECB March 2026 staff projection for 2027 HICP** (sourced from the `infl_expectations` panel where available; below values used as fallback).
 
 | Country | ECB baseline 2027 |
 |---------|------------------|
@@ -102,27 +112,33 @@ Interpretation: a country with larger upside risk (wider right tail) is more lik
 ```
 inflation_at_risk/
 ├── data/
-│   ├── hicp.py               # Eurostat HICP (dep. variable)
-│   ├── ameco.py              # EC AMECO inflation expectations
-│   ├── output_gap.py         # IMF output gap
-│   ├── energy_prices.py      # Brent crude % change
-│   ├── import_prices.py      # Import deflator % change
-│   ├── imf_fsi.py            # ECB CLIFS financial stress
-│   ├── ecb_spreads.py        # 10Y Maastricht bond yields
-│   ├── wui.py                # World Uncertainty Index
-│   └── panel_builder.py      # Merge & forward variable construction
+│   ├── modules/
+│   │   ├── hicp.py           # Eurostat HICP (dep. variable; prc_hicp_minr)
+│   │   ├── ameco.py          # Inflation expectations (OECD EO / ECB CES / fallback)
+│   │   ├── output_gap.py     # OECD EO output gap (GAP measure)
+│   │   ├── energy_prices.py  # Brent crude % change (FRED DCOILBRENTEU)
+│   │   ├── import_prices.py  # Import deflator % change (ECB SDW MNA / OECD EO)
+│   │   ├── food_prices.py    # Food price index % change (Eurostat prc_fsc_idx)
+│   │   ├── labour_costs.py   # Labour cost index % change (Eurostat lc_lci_r2_q)
+│   │   ├── EER.py            # NEER/REER (EC ECFIN m42neer.xlsx / m42reer.xlsx)
+│   │   ├── imf_fsi.py        # ECB CLIFS financial stress index
+│   │   ├── ecb_spreads.py    # 10Y Maastricht bond yields (Eurostat IRT_LT_MCBY_M)
+│   │   └── wui.py            # World Uncertainty Index
+│   ├── files/                # Compiled fallback parquet/ver caches
+│   └── panel_builder.py      # Merge & forward variable construction (monthly panel)
 ├── model/
 │   ├── location_scale.py     # MSS three-step estimator (IaR version)
 │   └── quantile_fit.py       # Fernández-Steel skewed-t fitting
 ├── risk/
 │   ├── pooling.py            # Log-score density pooling
-│   └── iar.py                # IaR extraction + driver decomposition
+│   └── iar.py                # IaR extraction + ECB baseline re-centring
 ├── crisis/
 │   └── deanchoring_signal.py # De-anchoring early-warning logit
 ├── output/
-│   └── charts.py             # Four publication-quality charts
+│   └── charts.py             # Publication-quality charts
 ├── notebooks/
 │   └── eu_g4_iar.ipynb       # Primary deliverable
+├── validation.py             # Econometric validation suite
 ├── requirements.txt
 └── README.md
 ```
